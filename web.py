@@ -1,29 +1,51 @@
-from flask import Flask, request, send_from_directory, jsonify
+from flask import Flask, request, send_file, abort
 import os
 import sqlite3
 
 app = Flask(__name__)
-os.makedirs("uploads", exist_ok=True)
+UPLOAD_FOLDER = "uploads"
+DATABASE = "database.db"
 
-conn = sqlite3.connect("database.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS files (file_id TEXT PRIMARY KEY, file_name TEXT)")
-conn.commit()
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-@app.route("/save", methods=["POST"])
-def save():
-    data = request.get_json()
-    cursor.execute("INSERT OR REPLACE INTO files (file_id, file_name) VALUES (?, ?)", (data["id"], data["name"]))
-    conn.commit()
-    return jsonify({"status": "ok"})
+def init_db():
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute("""CREATE TABLE IF NOT EXISTS files (
+                            id TEXT PRIMARY KEY,
+                            file_name TEXT,
+                            file_path TEXT
+                        )""")
+init_db()
 
-@app.route("/download/<file_id>")
+@app.route('/')
+def home():
+    return "File Server is Running."
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    file = request.files.get('file')
+    file_id = request.form.get('file_id')
+
+    if not file or not file_id:
+        return "Missing file or file_id", 400
+
+    path = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(path)
+
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute("INSERT INTO files (id, file_name, file_path) VALUES (?, ?, ?)",
+                     (file_id, file.filename, path))
+    return "Uploaded"
+
+@app.route('/download/<file_id>')
 def download(file_id):
-    cursor.execute("SELECT file_name FROM files WHERE file_id = ?", (file_id,))
-    row = cursor.fetchone()
-    if row:
-        return send_from_directory("uploads", row[0], as_attachment=True)
-    return "File not found", 404
+    with sqlite3.connect(DATABASE) as conn:
+        row = conn.execute("SELECT file_name, file_path FROM files WHERE id=?", (file_id,)).fetchone()
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    if not row:
+        abort(404)
+
+    return send_file(row[1], as_attachment=True, download_name=row[0])
+
+if __name__ == '__main__':
+    app.run()
